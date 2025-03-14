@@ -1,0 +1,157 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  # DynamoDB Table
+  DynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: http-crud-tutorial-items
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+  # IAM Role for Lambda Execution
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: DynamoDBAccessPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:Scan
+                  - dynamodb:DeleteItem
+                Resource: !GetAtt DynamoDBTable.Arn
+
+  # Lambda Function for CRUD Operations
+  CRUDLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: http-crud-tutorial-function
+      Handler: index.lambda_handler
+      Runtime: python3.9
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          from decimal import Decimal
+          dynamodb = boto3.resource("dynamodb")
+          table = dynamodb.Table('http-crud-tutorial-items')
+
+          def lambda_handler(event, context):
+              body = {}
+              statusCode = 200
+              headers = {
+                  "Content-Type": "application/json"
+              }
+
+              try:
+                  if event['routeKey'] == "DELETE /items/{id}":
+                      table.delete_item(Key={'id': event['pathParameters']['id']})
+                      body = 'Deleted item ' + event['pathParameters']['id']
+                  elif event['routeKey'] == "GET /items/{id}":
+                      body = table.get_item(Key={'id': event['pathParameters']['id']})
+                      body = body["Item"]
+                      responseBody = [{'price': float(body['price']), 'id': body['id'], 'name': body['name']}]
+                      body = responseBody
+                  elif event['routeKey'] == "GET /items":
+                      body = table.scan()
+                      body = body["Items"]
+                      responseBody = []
+                      for items in body:
+                          responseItems = [{'price': float(items['price']), 'id': items['id'], 'name': items['name']}]
+                          responseBody.append(responseItems)
+                      body = responseBody
+                  elif event['routeKey'] == "PUT /items":
+                      requestJSON = json.loads(event['body'])
+                      table.put_item(
+                          Item={
+                              'id': requestJSON['id'],
+                              'price': Decimal(str(requestJSON['price'])),
+                              'name': requestJSON['name']
+                          })
+                      body = 'Put item ' + requestJSON['id']
+              except KeyError:
+                  statusCode = 400
+                  body = 'Unsupported route: ' + event['routeKey']
+              body = json.dumps(body)
+              res = {
+                  "statusCode": statusCode,
+                  "headers": {"Content-Type": "application/json"},
+                  "body": body
+              }
+              return res
+
+  # API Gateway HTTP API
+  HTTPAPI:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: http-crud-tutorial-api
+      ProtocolType: HTTP
+
+  # API Gateway Routes
+  GetItemRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HTTPAPI
+      RouteKey: "GET /items/{id}"
+      Target: !Sub "integrations/${APIGatewayIntegration}"
+
+  GetAllItemsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HTTPAPI
+      RouteKey: "GET /items"
+      Target: !Sub "integrations/${APIGatewayIntegration}"
+
+  PutItemRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HTTPAPI
+      RouteKey: "PUT /items"
+      Target: !Sub "integrations/${APIGatewayIntegration}"
+
+  DeleteItemRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HTTPAPI
+      RouteKey: "DELETE /items/{id}"
+      Target: !Sub "integrations/${APIGatewayIntegration}"
+
+    # API Gateway Integration
+  APIGatewayIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HTTPAPI
+      IntegrationType: AWS_PROXY
+      IntegrationUri: arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${CRUDLambdaFunction}
+
+  # Permissions for API Gateway to Invoke Lambda
+  APIGatewayInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref CRUDLambdaFunction
+      Principal: apigateway.amazonaws.com
+
+Outputs:
+  APIEndpoint:
+    Description: "HTTP API endpoint URL"
+    Value: !Sub "https://${HTTPAPI}.execute-api.${AWS::Region}.amazonaws.com"
