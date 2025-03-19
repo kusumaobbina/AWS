@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Gateway Data</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f4f7fa;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+        .container {
+            background-color: #fff;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+            width: 80%;
+            max-width: 800px;
+        }
+
+        h1 {
+            color: #333;
+            text-align: center;
+            font-size: 2rem;
+            margin-bottom: 20px;
+        }
+
+        button {
+            background-color: #007bff;
+            color: white;
+            font-size: 1rem;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+            width: 100%;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        #data-container {
+            margin-top: 20px;
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 20px;
+        }
+
+        .item-card {
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+            border: 1px solid #ddd;
+            text-align: center;
+        }
+
+        .item-card h3 {
+            margin: 10px 0;
+            font-size: 1.25rem;
+            color: #333;
+        }
+
+        .item-card p {
+            margin: 5px 0;
+            font-size: 1rem;
+            color: #555;
+        }
+
+        .item-card .price {
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: #007bff;
+        }
+
+        .error {
+            color: red;
+            font-weight: bold;
+        }
+
+        .loading {
+            text-align: center;
+            font-size: 1.2rem;
+            color: #007bff;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>API Gateway Data</h1>
+        <button onclick="fetchData()">Fetch Data</button>
+        <div id="data-container"></div>
+    </div>
+
+    <script>
+        async function fetchData() {
+            const apiUrl = "https://5m9865rhnj.execute-api.eu-west-1.amazonaws.com/items"; // Replace with your actual API Gateway URL
+            const container = document.getElementById("data-container");
+            
+            container.innerHTML = "<p class='loading'>Loading...</p>"; // Show loading message
+            
+            try {
+                const response = await fetch(apiUrl);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! Status: ${response.status}`);
+                }
+                const data = await response.json();
+                container.innerHTML = ""; // Clear loading message
+                displayData(data);
+            } catch (error) {
+                container.innerHTML = `<p class='error'>Error: ${error.message}</p>`; // Display error
+            }
+        }
+
+        function displayData(data) {
+            const container = document.getElementById("data-container");
+            data.forEach(item => {
+                const card = document.createElement("div");
+                card.classList.add("item-card");
+
+                card.innerHTML = `
+                    <h3>${item.name}</h3>
+                    <p>ID: ${item.id}</p>
+                    <p class="price">$${item.price}</p>
+                `;
+
+                container.appendChild(card);
+            });
+        }
+    </script>
+</body>
+</html>
