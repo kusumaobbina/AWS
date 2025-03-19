@@ -2,5 +2,4 @@ aws cloudformation create-stack --stack-name Mys3APIStackV2 --template-body file
 curl -X "PUT" -H "Content-Type: application/json" -d "{\"id\": \"161\", \"price\": 10, \"name\": \"Pencil\"}" https://d9utttymc5.execute-api.eu-west-1.amazonaws.com/items
 curl https://d9utttymc5.execute-api.eu-west-1.amazonaws.com/items
 curl -X DELETE https://d9utttymc5.execute-api.eu-west-1.amazonaws.com/items/161
-	
 https://d9utttymc5.execute-api.eu-west-1.amazonaws.com
