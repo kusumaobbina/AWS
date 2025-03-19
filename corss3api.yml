@@ -1,12 +1,12 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'CloudFormation template for Lambda execution role with permissions for DynamoDB, S3, and CloudWatch Logs'
+Description: 'CloudFormation template for Lambda execution role with permissions for DynamoDB, S3, CloudWatch Logs, and CORS configuration'
 
 Resources:
   # DynamoDB Table
   DynamoDBTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: http-crud-tutorial-items-v2
+      TableName: http-crud-tutorial-items
       AttributeDefinitions:
         - AttributeName: id
           AttributeType: S
@@ -28,7 +28,7 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       Policies:
-        - PolicyName: LambdaBasicExecutionPolicy
+        - PolicyName: DynamoDBAccessPolicy
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
@@ -38,20 +38,17 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: arn:aws:logs:*:*:*
-
               - Effect: Allow
                 Action:
                   - dynamodb:GetItem
                   - dynamodb:Scan
                   - dynamodb:PutItem
                   - dynamodb:DeleteItem
-                Resource: !GetAtt DynamoDBTable.Arn
-
+                Resource: arn:aws:dynamodb:*:*:table/http-crud-tutorial-items
               - Effect: Allow
                 Action:
-                  - s3:GetObject
-                  - s3:PutObject
-                Resource: !Sub "arn:aws:s3:::${S3Bucket}/*"
+                  - s3:*
+                Resource: arn:aws:s3:::http-crud-web-hosting-v2/*
 
   # S3 Bucket for Web Hosting
   S3Bucket:
@@ -62,7 +59,7 @@ Resources:
         IndexDocument: index.html
         ErrorDocument: error.html
 
-  # Lambda Function
+  # Lambda Function Handling All API Requests
   CRUDLambdaFunction:
     Type: AWS::Lambda::Function
     Properties:
@@ -76,23 +73,36 @@ Resources:
           import boto3
           from decimal import Decimal
 
+          client = boto3.client('dynamodb')
           dynamodb = boto3.resource("dynamodb")
-          table_name = os.environ['TABLE_NAME']
-          table = dynamodb.Table(table_name)
+          table = dynamodb.Table('http-crud-tutorial-items')
 
           def lambda_handler(event, context):
               body = {}
               statusCode = 200
+              headers = {
+                  "Content-Type": "application/json",
+                  "Access-Control-Allow-Origin": "*",
+                  "Access-Control-Allow-Headers": "Content-Type",
+                  "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS"
+              }
+
               try:
                   if event['routeKey'] == "DELETE /items/{id}":
                       table.delete_item(Key={'id': event['pathParameters']['id']})
-                      body = {'message': 'Deleted item', 'id': event['pathParameters']['id']}
+                      body = 'Deleted item ' + event['pathParameters']['id']
                   elif event['routeKey'] == "GET /items/{id}":
-                      result = table.get_item(Key={'id': event['pathParameters']['id']})
-                      body = result.get("Item", {})
+                      body = table.get_item(Key={'id': event['pathParameters']['id']})
+                      body = body["Item"]
+                      body = [{'price': float(body['price']), 'id': body['id'], 'name': body['name']}]
                   elif event['routeKey'] == "GET /items":
-                      items = table.scan().get("Items", [])
-                      body = [{'id': item['id'], 'name': item['name'], 'price': float(item['price'])} for item in items]
+                      body = table.scan()
+                      body = body["Items"]
+                      responseBody = []
+                      for item in body:
+                          responseItems = [{'price': float(item['price']), 'id': item['id'], 'name': item['name']}]
+                          responseBody.append(responseItems)
+                      body = responseBody
                   elif event['routeKey'] == "PUT /items":
                       requestJSON = json.loads(event['body'])
                       table.put_item(
@@ -101,23 +111,17 @@ Resources:
                               'price': Decimal(str(requestJSON['price'])),
                               'name': requestJSON['name']
                           })
-                      body = {'message': 'Item inserted', 'id': requestJSON['id']}
-                  else:
-                      statusCode = 400
-                      body = {'error': 'Unsupported route'}
-              except Exception as e:
-                  statusCode = 500
-                  body = {'error': str(e)}
+                      body = 'Put item ' + requestJSON['id']
+              except KeyError:
+                  statusCode = 400
+                  body = 'Unsupported route: ' + event['routeKey']
 
+              body = json.dumps(body)
               return {
-                  "statusCode": statusCode,
-                  "headers": {"Content-Type": "application/json"},
-                  "body": json.dumps(body)
+                  'statusCode': statusCode,
+                  'body': body,
+                  'headers': headers
               }
-      Environment:
-        Variables:
-          TABLE_NAME: !Ref DynamoDBTable
-          S3_BUCKET_NAME: !Ref S3Bucket
 
   # API Gateway
   ApiGateway:
@@ -126,24 +130,7 @@ Resources:
       Name: MyHTTPAPIV2
       ProtocolType: HTTP
 
-  # API Integration
-  ApiGatewayIntegration:
-    Type: AWS::ApiGatewayV2::Integration
-    Properties:
-      ApiId: !Ref ApiGateway
-      IntegrationType: AWS_PROXY
-      IntegrationUri: !GetAtt CRUDLambdaFunction.Arn
-      PayloadFormatVersion: '2.0'
-
-  # API Routes
-  ApiGatewayRoutes:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref ApiGateway
-      RouteKey: 'ANY /items/{id}'
-      Target: !Sub 'integrations/${ApiGatewayIntegration}'
-
-  # API Stage
+  # API Default Stage
   ApiGatewayStage:
     Type: AWS::ApiGatewayV2::Stage
     Properties:
@@ -151,7 +138,57 @@ Resources:
       StageName: "$default"
       AutoDeploy: true
 
-  # Lambda Invoke Permission
+  # API Routes
+  ApiGatewayGetItemRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ApiGateway
+      RouteKey: 'GET /items/{id}'
+      Target: !Sub 'integrations/${ApiGatewayIntegration}'
+
+  ApiGatewayGetAllItemsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ApiGateway
+      RouteKey: 'GET /items'
+      Target: !Sub 'integrations/${ApiGatewayIntegration}'
+
+  ApiGatewayPutRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ApiGateway
+      RouteKey: 'PUT /items'
+      Target: !Sub 'integrations/${ApiGatewayIntegration}'
+
+  ApiGatewayDeleteRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ApiGateway
+      RouteKey: 'DELETE /items/{id}'
+      Target: !Sub 'integrations/${ApiGatewayIntegration}'
+
+  # API Integration (Single Integration for All Routes)
+  ApiGatewayIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref ApiGateway
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt CRUDLambdaFunction.Arn
+      PayloadFormatVersion: '2.0'
+      IntegrationResponseParameters:
+        'method.response.header.Access-Control-Allow-Origin': "'*'"
+        'method.response.header.Access-Control-Allow-Headers': "'Content-Type'"
+        'method.response.header.Access-Control-Allow-Methods': "'GET, POST, PUT, DELETE, OPTIONS'"
+
+  # API Gateway OPTIONS Route (For CORS Preflight)
+  ApiGatewayOptions:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ApiGateway
+      RouteKey: 'OPTIONS /items'
+      Target: !Sub 'integrations/${ApiGatewayIntegration}'
+
+  # Permission for API Gateway to invoke Lambda (API Gateway added as trigger)
   LambdaInvokePermission:
     Type: AWS::Lambda::Permission
     Properties:

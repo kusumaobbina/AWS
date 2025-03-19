@@ -1,69 +1,236 @@
-import json
-import boto3
-from decimal import Decimal
-import os
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template for Lambda execution role with permissions for DynamoDB, S3, and CloudWatch Logs'
 
-client = boto3.client('dynamodb')
-dynamodb = boto3.resource("dynamodb")
-s3 = boto3.client('s3')
-table = dynamodb.Table('http-crud-tutorial-items')
-tableName = 'http-crud-tutorial-items'
-bucket_name = os.environ['S3_BUCKET_NAME']
+Resources:
+  # DynamoDB Table
+  DynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: http-crud-tutorial-items
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
 
-def lambda_handler(event, context):
-    print(event)
-    body = {}
-    statusCode = 200
-    headers = {
-        "Content-Type": "application/json"
-    }
+  # Lambda Execution Role
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LambdaDynamoDBExecutionRolev2
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: DynamoDBAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: arn:aws:logs:*:*:*
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Scan
+                  - dynamodb:PutItem     # Allowing PutItem action
+                  - dynamodb:DeleteItem
+                Resource: arn:aws:dynamodb:*:*:table/http-crud-tutorial-items
+              - Effect: Allow
+                Action:
+                  - s3:*
+                Resource: arn:aws:s3:::http-crud-web-hosting-v2/*  # Update with your S3 bucket name
 
-    try:
-        if event['routeKey'] == "DELETE /items/{id}":
-            table.delete_item(
-                Key={'id': event['pathParameters']['id']})
-            body = 'Deleted item ' + event['pathParameters']['id']
-        elif event['routeKey'] == "GET /items/{id}":
-            body = table.get_item(
-                Key={'id': event['pathParameters']['id']})
-            body = body["Item"]
-            responseBody = [
-                {'price': float(body['price']), 'id': body['id'], 'name': body['name']}]
-            body = responseBody
-        elif event['routeKey'] == "GET /items":
-            body = table.scan()
-            body = body["Items"]
-            responseBody = []
-            for items in body:
-                responseItems = [
-                    {'price': float(items['price']), 'id': items['id'], 'name': items['name']}]
-                responseBody.append(responseItems)
-            body = responseBody
-            # Upload data to S3 for web hosting
-            s3.put_object(
-                Bucket=bucket_name,
-                Key='index.html',
-                Body=json.dumps(body),
-                ContentType='application/json'
-            )
-        elif event['routeKey'] == "PUT /items":
-            requestJSON = json.loads(event['body'])
-            table.put_item(
-                Item={
-                    'id': requestJSON['id'],
-                    'price': Decimal(str(requestJSON['price'])),
-                    'name': requestJSON['name']
-                })
-            body = 'Put item ' + requestJSON['id']
-    except KeyError:
-        statusCode = 400
-        body = 'Unsupported route: ' + event['routeKey']
-    body = json.dumps(body)
-    res = {
-        "statusCode": statusCode,
-        "headers": {
-            "Content-Type": "application/json"
-        },
-        "body": body
-    }
-    return res
+  # S3 Bucket for Web Hosting
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: http-crud-web-hosting-v2
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+
+  # Single Lambda Function Handling All API Requests
+  CRUDLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: http-crud-tutorial-function-v2
+      Handler: index.lambda_handler
+      Runtime: python3.9
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+                import json
+                import boto3
+                from decimal import Decimal
+
+                client = boto3.client('dynamodb')
+                dynamodb = boto3.resource("dynamodb")
+                table = dynamodb.Table('http-crud-tutorial-items')
+                tableName = 'http-crud-tutorial-items'
+
+                def lambda_handler(event, context):
+                    print("Received event:", json.dumps(event, indent=2))  # Debugging: Print event structure
+
+                    body = {}
+                    statusCode = 200
+                    headers = {
+                        "Content-Type": "application/json",
+                        "access-control-allow-origin": "*",
+                        "access-control-allow-headers": "Content-Type",
+                        "access-control-allow-methods": "OPTIONS,GET,POST,PUT,DELETE"
+                    }
+
+                    try:
+                        # Check if 'routeKey' exists in event
+                        if 'routeKey' not in event:
+                            raise KeyError("Missing 'routeKey' in event")
+
+                        routeKey = event['routeKey']
+
+                        if routeKey == "DELETE /items/{id}":
+                            if 'pathParameters' not in event or 'id' not in event['pathParameters']:
+                                raise KeyError("Missing 'id' in pathParameters")
+                            table.delete_item(Key={'id': event['pathParameters']['id']})
+                            body = f"Deleted item {event['pathParameters']['id']}"
+
+                        elif routeKey == "GET /items/{id}":
+                            if 'pathParameters' not in event or 'id' not in event['pathParameters']:
+                                raise KeyError("Missing 'id' in pathParameters")
+                            body = table.get_item(Key={'id': event['pathParameters']['id']})
+                            body = body.get("Item", {})  # Avoid KeyError if item is missing
+                            if not body:
+                                statusCode = 404
+                                body = "Item not found"
+                            else:
+                                responseBody = [{'price': float(body['price']), 'id': body['id'], 'name': body['name']}]
+                                body = responseBody
+
+                        elif routeKey == "GET /items":
+                            body = table.scan()
+                            body = body.get("Items", [])  # Ensure it's a list
+                            print("ITEMS----", body)
+                            responseBody = [{'price': float(item['price']), 'id': item['id'], 'name': item['name']} for item in body]
+                            body = responseBody
+
+                        elif routeKey == "PUT /items":
+                            if 'body' not in event:
+                                raise KeyError("Missing 'body' in event")
+                            requestJSON = json.loads(event['body'])
+                            table.put_item(
+                                Item={
+                                    'id': requestJSON['id'],
+                                    'price': Decimal(str(requestJSON['price'])),  # Ensure Decimal conversion
+                                    'name': requestJSON['name']
+                                })
+                            body = f"Put item {requestJSON['id']}"
+
+                        else:
+                            statusCode = 400
+                            body = f"Unsupported route: {routeKey}"
+
+                    except KeyError as e:
+                        statusCode = 400
+                        body = f"Error: {str(e)}"
+                    
+                    except Exception as e:
+                        statusCode = 500
+                        body = f"Internal server error: {str(e)}"
+
+                    return {
+                        "statusCode": statusCode,
+                        "headers": headers,
+                        "body": json.dumps(body)
+                    }  # This return should be inside the function
+
+
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref DynamoDBTable
+          S3_BUCKET_NAME: !Ref S3Bucket
+
+  # API Gateway
+  ApiGateway:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: MyHTTPAPIV2
+      ProtocolType: HTTP
+
+  # API Default Stage
+  ApiGatewayStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref ApiGateway
+      StageName: "$default"
+      AutoDeploy: true
+
+  # API Routes
+  ApiGatewayGetItemRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ApiGateway
+      RouteKey: 'GET /items/{id}'
+      Target: !Sub 'integrations/${ApiGatewayIntegration}'
+
+  ApiGatewayGetAllItemsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ApiGateway
+      RouteKey: 'GET /items'
+      Target: !Sub 'integrations/${ApiGatewayIntegration}'
+
+  ApiGatewayPutRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ApiGateway
+      RouteKey: 'PUT /items'
+      Target: !Sub 'integrations/${ApiGatewayIntegration}'
+
+  ApiGatewayDeleteRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ApiGateway
+      RouteKey: 'DELETE /items/{id}'
+      Target: !Sub 'integrations/${ApiGatewayIntegration}'
+
+  # API Integration (Single Integration for All Routes)
+  ApiGatewayIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref ApiGateway
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt CRUDLambdaFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  ApiGatewayOptions:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ApiGateway
+      RouteKey: 'OPTIONS /items'
+      Target: !Sub 'integrations/${ApiGatewayIntegration}'
+
+  # Permission for API Gateway to invoke Lambda (API Gateway added as trigger)
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref CRUDLambdaFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*"
+
+Outputs:
+  ApiEndpoint:
+    Description: "API Gateway Endpoint URL"
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com"
+  S3BucketURL:
+    Description: "S3 Bucket Website URL"
+    Value: !Sub "http://${S3Bucket}.s3-website-${AWS::Region}.amazonaws.com"
