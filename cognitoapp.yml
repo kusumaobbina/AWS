@@ -1,0 +1,279 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template for a Cognito-authenticated API using Lambda, DynamoDB, and S3'
+
+Resources:
+  # DynamoDB Table
+  DynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: http-crud-tutorial-items
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  # Lambda Execution Role
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LambdaDynamoDBExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: DynamoDBAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: arn:aws:logs:*:*:*
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Scan
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                Resource: arn:aws:dynamodb:*:*:table/http-crud-tutorial-items
+              - Effect: Allow
+                Action:
+                  - s3:*
+                Resource: arn:aws:s3:::http-crud-web-hosting-v2/*
+
+  # Lambda Function
+  CRUDLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: http-crud-tutorial-function
+      Handler: index.lambda_handler
+      Runtime: python3.9
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+              import json
+              import boto3
+              from decimal import Decimal
+
+              client = boto3.client('dynamodb')
+              dynamodb = boto3.resource("dynamodb")
+              table = dynamodb.Table('http-crud-tutorial-items')
+
+              # Custom function to convert Decimal to float or string
+              def decimal_serializer(obj):
+                  if isinstance(obj, Decimal):
+                      return float(obj)  # Convert Decimal to float
+                  raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+
+              def lambda_handler(event, context):
+                  print("Received event:", json.dumps(event, indent=2))
+
+                  body = {}
+                  statusCode = 200
+                  headers = {
+                      "Content-Type": "application/json",
+                      "access-control-allow-origin": "*",
+                  }
+
+                  try:
+                      if 'routeKey' not in event:
+                          raise KeyError("Missing 'routeKey' in event")
+
+                      routeKey = event['routeKey']
+
+                      if routeKey == "DELETE /items/{id}":
+                          if 'pathParameters' not in event or 'id' not in event['pathParameters']:
+                              raise KeyError("Missing 'id' in pathParameters")
+                          table.delete_item(Key={'id': event['pathParameters']['id']})
+                          body = f"Deleted item {event['pathParameters']['id']}"
+
+                      elif routeKey == "GET /items/{id}":
+                          if 'pathParameters' not in event or 'id' not in event['pathParameters']:
+                              raise KeyError("Missing 'id' in pathParameters")
+                          response = table.get_item(Key={'id': event['pathParameters']['id']})
+                          body = response.get("Item", {})
+                          if not body:
+                              statusCode = 404
+                              body = "Item not found"
+
+                      elif routeKey == "GET /items":
+                          response = table.scan()
+                          body = response.get("Items", [])
+
+                      elif routeKey == "PUT /items":
+                          if 'body' not in event:
+                              raise KeyError("Missing 'body' in event")
+                          requestJSON = json.loads(event['body'])
+                          table.put_item(
+                              Item={
+                                  'id': requestJSON['id'],
+                                  'price': Decimal(str(requestJSON['price'])),  # Ensure it's Decimal
+                                  'name': requestJSON['name']
+                              })
+                          body = f"Put item {requestJSON['id']}"
+
+                      else:
+                          statusCode = 400
+                          body = f"Unsupported route: {routeKey}"
+
+                  except KeyError as e:
+                      statusCode = 400
+                      body = f"Error: {str(e)}"
+
+                  except Exception as e:
+                      statusCode = 500
+                      body = f"Internal server error: {str(e)}"
+
+                  return {
+                      "statusCode": statusCode,
+                      "headers": headers,
+                      "body": json.dumps(body, default=decimal_serializer)  # Use custom serializer
+                  }
+
+
+  # S3 Bucket for Web Hosting
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: http-crud-web-hosting-v2
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+
+  # Cognito User Pool
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: KusumaUserPool
+      AliasAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      MfaConfiguration: "OFF"
+
+  # Cognito User Pool Domain
+  CognitoUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: kusuma
+      UserPoolId: !Ref CognitoUserPool
+
+  # Cognito User Pool Client (OAuth only, no USER_PASSWORD_AUTH)
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: KusumaUserPoolClient
+      UserPoolId: !Ref CognitoUserPool
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+      CallbackURLs:
+        - !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/items"
+      LogoutURLs:
+        - "https://yourfrontend.com/logout"
+      SupportedIdentityProviders:
+        - COGNITO
+      GenerateSecret: false
+
+  # API Gateway
+  ApiGateway:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: MyHTTPAPIV2
+      ProtocolType: HTTP
+  
+  # API Default Stage
+  ApiGatewayStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref ApiGateway
+      StageName: "$default"
+      AutoDeploy: true
+
+  # API Gateway Routes (Including Authentication)
+  ApiGatewayGetItemRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ApiGateway
+      RouteKey: 'GET /items/{id}'
+      Target: !Sub 'integrations/${ApiGatewayIntegration}'
+      AuthorizationType: JWT
+      AuthorizerId: !Ref ApiGatewayAuthorizer
+
+  ApiGatewayGetAllItemsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ApiGateway
+      RouteKey: 'GET /items'
+      Target: !Sub 'integrations/${ApiGatewayIntegration}'
+      AuthorizationType: JWT
+      AuthorizerId: !Ref ApiGatewayAuthorizer
+
+  ApiGatewayPutRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ApiGateway
+      RouteKey: 'PUT /items'
+      Target: !Sub 'integrations/${ApiGatewayIntegration}'
+      AuthorizationType: JWT
+      AuthorizerId: !Ref ApiGatewayAuthorizer
+
+  ApiGatewayDeleteRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ApiGateway
+      RouteKey: 'DELETE /items/{id}'
+      Target: !Sub 'integrations/${ApiGatewayIntegration}'
+      AuthorizationType: JWT
+      AuthorizerId: !Ref ApiGatewayAuthorizer
+
+  # API Gateway Authorizer (JWT-based authentication)
+  ApiGatewayAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref ApiGateway
+      AuthorizerType: JWT
+      IdentitySource:
+        - '$request.header.Authorization'
+      Name: CognitoAuth
+      JwtConfiguration:
+        Audience:
+          - !Ref CognitoUserPoolClient
+        Issuer: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${CognitoUserPool}"
+
+  # API Gateway Integration
+  ApiGatewayIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref ApiGateway
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt CRUDLambdaFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  # Lambda Permission for API Gateway
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref CRUDLambdaFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*"
+
+
+Outputs:
+  CognitoHostedUI:
+    Description: "Cognito Hosted UI URL"
+    Value: !Sub "https://kusuma.auth.${AWS::Region}.amazoncognito.com"
