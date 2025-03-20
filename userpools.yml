@@ -1,0 +1,17 @@
+UserPool:
+  Type: AWS::Cognito::UserPool
+  Properties:
+    AutoVerifiedAttributes:
+      - email
+    UsernameAttributes:
+      - email
+    UserPoolName: cognito-apigateway
+
+UserPoolClient:
+  Type: AWS::Cognito::UserPoolClient
+  Properties:
+    ClientName: cognito-apigateway
+    ExplicitAuthFlows:
+      - ALLOW_USER_PASSWORD_AUTH
+      - ALLOW_REFRESH_TOKEN_AUTH
+    UserPoolId: !Ref UserPool

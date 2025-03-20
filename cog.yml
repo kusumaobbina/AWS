@@ -1,0 +1,104 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Setup resources for an application using Cognito and API Gateway with OAuth integration
+
+Resources:
+  # 1. Cognito User Pool
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: MyAppUserPool
+      AliasAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      MfaConfiguration: OFF
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+
+  # 2. Cognito User Pool Client
+  CognitoAppClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: MyAppClient
+      UserPoolId: !Ref CognitoUserPool
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_SRP_AUTH
+      GenerateSecret: false
+      CallbackURLs:
+        - "https://http-crud-web-hosting-v2.s3.eu-west-1.amazonaws.com/index.html?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=ASIAQYEI4X6G447IKV6D%2F20250319%2Feu-west-1%2Fs3%2Faws4_request&X-Amz-Date=20250319T210614Z&X-Amz-Expires=300&X-Amz-Security-Token=IQoJb3JpZ2luX2VjECUaCWV1LXdlc3QtMSJIMEYCIQDvoqyE%2BDGt5aHyD02d8DJrdDG1MvK8zjjvRkq%2BYZikWQIhAIdx7saK2v6d3wMWK%2BpEIr8dayYDjmjnVU8HInc1f507KoIDCH4QABoMMDUxODI2NzA0MjY5Igwl2oxYWewsm4tVdY8q3wIHvPKf%2BlwHsF684Z%2FWTMfTvTxMK44upA693tMHnpO9lCbTFXNhpcQzvaxl7f9%2B1%2F3tL%2FMd4DQh23DfRnORLZ4RN0wsTqbOZtjKRXqLJsdtI2FAN5bTZ%2B%2FSLLozscSd3O3KCZQA3pezMnNgW%2FPDheWu%2FaIKV7kqQRNvT3PxJHHXk3e0E4WUFUO9UCq9DOhm3RohXuQGP1uDmYuFlQ3sg8NUw6JodurLCxwR%2FudUGvdHArL1ZtDDPOemu01i0IwOowodtu%2BVZdMykE5wE7RyxqUhtqCsmlh8TOUIs8TEojNStMLTciSbcznmFLzQItHqrlJCRS11LUOkXDlNw%2BC3BmlRNCkRn22AyCCNdsoVkHGfDLvvd9HOMLEWpbTeoCGWonqy6Obzr6st%2BemmrbqNsLa5WCAUhjizp%2BgdGQqVC7zkNWcMzMa6MPM43gBviw1HtnBgiuny4XDG9Ysl8s07jegwtIXrvgY6sgIdpksdDL7yjDhsbCJz0aJpI32Rx8bpDAFFIiZ8VdVDDMcqqxfA9Uxaf9oMasttVQeZWazTPKfnNLmRXymLluwkld9KPgq28eSRGQWzGg%2F2n69dbtI7pKtj%2Bst3pDSnwW6v0OWKYDwUUXFzRQXqVGE2Xwnk8XnGqFY4yeW4b5Vc9xaHFNYqnvg78tK5u7a8FY6HWTotIDmjy0oAlV%2FmFv%2FAT85Hksz69ZetjIWl4MKK8Gl%2BiUl5iUwLulnSCZUxfFn4S%2B7IScI6m%2BQPzpJ1To%2BDzUoaKLVJe5sljTbkDqSckx0Vd72aoGa93RqL8hL9a%2BTavrPdmT79SqsJHb9VcswFuL2RUZPgYh43yKumApKjgSZcye3QnwMRskf12vSPzypNFJGZYP2tW0tkHeA6L6bUMJk%3D&X-Amz-Signature=5771524940a3f111491f16053a5f650d27ed66a03a7268ea3431501e82e25ef8&X-Amz-SignedHeaders=host&response-content-disposition=inline"  # Replace with your app's callback URL
+      LogoutURLs:
+        - "https://your-app.com/logout"  # Replace with your app's logout URL
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - openid
+        - profile
+        - email
+
+  # 3. Cognito Identity Pool (Optional)
+  CognitoIdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Properties:
+      IdentityPoolName: MyAppIdentityPool
+      AllowUnauthenticatedIdentities: false
+      CognitoIdentityProviders:
+        - ClientId: !Ref CognitoAppClient
+          ProviderName: !GetAtt CognitoUserPool.ProviderName
+
+  # 4. Cognito Hosted UI Domain
+  CognitoUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub "${AWS::StackName}-auth"
+      UserPoolId: !Ref CognitoUserPool
+
+  # 5. API Gateway (Basic HTTP API for API)
+  ApiGateway:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: MyAppAPI
+      ProtocolType: HTTP
+
+  # 6. API Gateway Route (GET /data)
+  ApiGatewayRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ApiGateway
+      RouteKey: 'GET /data'
+      Target: "http-crud-tutorial-function-v2"  # You can integrate a mock or real Lambda here
+
+  # 7. API Gateway Stage
+  ApiGatewayStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref ApiGateway
+      StageName: "$default"
+      AutoDeploy: true
+
+  # 8. S3 Bucket for Static Web Hosting (optional)
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: "my-app-web-hosting"
+      WebsiteConfiguration:
+        IndexDocument: "index.html"
+        ErrorDocument: "error.html"
+
+Outputs:
+  ApiEndpoint:
+    Description: "The API Gateway Endpoint"
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com"
+
+  CognitoHostedUIDomain:
+    Description: "Cognito Hosted UI Domain URL"
+    Value: !Sub "https://${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com"
+
+  S3BucketURL:
+    Description: "S3 Website Hosting URL"
+    Value: !Sub "http://${S3Bucket}.s3-website-${AWS::Region}.amazonaws.com"
